@@ -26,6 +26,8 @@ def main_program():
         cla_parser.add_argument('-o', '--out', default=default_out_dir,
                                 help='set the directory to which all stories will be downloaded '
                                      f"(default is {default_out_dir})")
+        cla_parser.add_argument('-i', '--input', action='append', default=[],
+                                help='read URLs from an input file with the links separated by line breaks')
         cla_parser.add_argument('-a', '--adult', help='set whether to download mature rated stories (y/n)')
         cla_parser.add_argument('-f', '--format', choices=sum(format_choices.values(), []),
                                 help='set the file format for all downloaded stories')
@@ -33,11 +35,21 @@ def main_program():
                                 help='set whether to download only from the current page (1) '
                                      'or from all pages starting with the current one (2)')
         cla_parser.usage = __file__ + ' [options] [URLs]'
-        cla_parser.epilog = "If any numbers of URLs are passed, the program will process them and quit. Otherwise " \
-                            "it'll ask the user to input them until an interrupt signal or EOF is encountered." \
-                            "If the rating, format or range isn't passed, the user will be asked to specify the " \
-                            "missing settings for each URL."
+        cla_parser.epilog = "If any number of URLs or input files is passed, the program will process them and quit. " \
+                            "Otherwise it'll ask the user to input URLs until an interrupt signal or EOF is " \
+                            "encountered. If the rating, format or range isn't passed, the user will be asked to " \
+                            "specify the missing settings for each URL."
         return cla_parser.parse_known_args()
+
+    def collect_story_links():
+        urls = cla_args[1]
+        for filepath in cla_args[0].input:
+            try:
+                with open(filepath) as file:
+                    urls.extend(line.strip() for line in file.readlines() if not line.isspace())
+            except OSError as ex:
+                print(ex)
+        return urls
 
     def create_download_folder():
         """
@@ -56,12 +68,8 @@ def main_program():
             url = input(
                 "Enter the address of a public or unlisted bookshelf or folder.\nIt has to start with 'https://www': ")
         else:
-            url = cla_args[1][list_link_id]
+            url = list_story_links[list_link_id]
             print('Downloading from:', url)
-
-        if 'fimfiction.net/story' in url:
-            raise FfsdError(
-                "This program cannot download single stories. You need the website address with a list of stories.")
 
         parsed = list(urlparse.urlparse(url))
         query = dict(urlparse.parse_qsl(parsed[4]))  # 4 as an equivalent to parsed_url.query
@@ -99,17 +107,20 @@ def main_program():
                             "Remember that it has to start with 'https://www'. Try again.")
         return BeautifulSoup(source, "lxml")
 
+    def pick_file_format_ext(format_choice):
+        return next(key for key, values in format_choices.items() if format_choice in values)
+
     def choose_file_format():
         """
         Choose the format of story
         """
         if cla_args[0].format:
-            return next(key for key, values in format_choices.items() if cla_args[0].format in values)
+            return pick_file_format_ext(cla_args[0].format)
 
         while True:
             try:
                 chosen_file_format = input('\nChoose the file format (enter a number): 1-txt, 2-html, 3-epub: ').lower()
-                return next(key for key, values in format_choices.items() if chosen_file_format in values)
+                return pick_file_format_ext(chosen_file_format)
             except StopIteration:
                 print("You entered something incorrect. Try again.")
 
@@ -145,21 +156,23 @@ def main_program():
                         print("You entered something incorrect. Try again!")
         return current_page, end_page
 
+    def make_download_link(url):
+        return 'https://www.fimfiction.net/story/download/' + url.split('/')[2] + output
+
     def stories_and_pages_loop():
         """
         Get links to stories from a page and move to the next ones
         """
+        if 'fimfiction.net/story' in website_url:
+            return [make_download_link(website_url)]
+
         all_links = []
         soup = get_the_website_data()
         current_page, end_page = range_of_pages(soup)
 
         while True:
-            beginning = 'https://www.fimfiction.net/story/download/'
-
             for story in soup.findAll(class_=['story_link', 'story_name']):
-                link = story.attrs["href"]
-                identifier = link.split("/")[2]
-                all_links.append(beginning + identifier + output)
+                all_links.append(make_download_link(story.attrs["href"]))
 
             if current_page == end_page:
                 break
@@ -216,8 +229,9 @@ def main_program():
         print(f'Your stories have been downloaded to "{os.path.join(os.getcwd(), cla_args[0].out)}".')
 
     cla_args = parse_command_line_arguments()
-    list_link_id = -1 if len(cla_args[1]) == 0 else 0
-    while list_link_id < len(cla_args[1]):
+    list_story_links = collect_story_links()
+    list_link_id = -1 if len(list_story_links) == 0 else 0
+    while list_link_id < len(list_story_links):
         try:
             website_url, parsed_url, url_query = get_the_website_address()
             session = establish_a_session()
